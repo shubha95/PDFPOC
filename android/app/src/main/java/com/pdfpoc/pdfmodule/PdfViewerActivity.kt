@@ -169,17 +169,17 @@ fun PdfRendererView(uri: Uri) {
                     return@withContext null
                 }
                 
-                val scaleFactor = (targetScale * density * 4f).coerceIn(1.5f, 4f)
-                val width = (page.width * scaleFactor).toInt()
-                val height = (page.height * scaleFactor).toInt()
-                
+            val scaleFactor = (targetScale * density * 4f).coerceIn(1.5f, 4f)
+                    val width = (page.width * scaleFactor).toInt()
+                    val height = (page.height * scaleFactor).toInt()
+                    
                 // Check memory availability
-                val runtime = Runtime.getRuntime()
-                val maxMemory = runtime.maxMemory()
-                val usedMemory = runtime.totalMemory() - runtime.freeMemory()
-                val availableMemory = maxMemory - usedMemory
-                val bitmapSize = (width * height * 4).toLong()
-                
+                    val runtime = Runtime.getRuntime()
+                    val maxMemory = runtime.maxMemory()
+                    val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+                    val availableMemory = maxMemory - usedMemory
+                    val bitmapSize = (width * height * 4).toLong()
+                    
                 bitmap = try {
                     if (bitmapSize > availableMemory * 0.8) {
                         // Use lower quality if memory is tight
@@ -233,11 +233,11 @@ fun PdfRendererView(uri: Uri) {
                         android.util.Log.e("PdfRenderer", "Error cleaning up bitmap: ${ex.message}")
                     }
                     null
-                }
-                
-            } catch (e: Exception) {
+                    }
+                    
+                } catch (e: Exception) {
                 android.util.Log.e("PdfRenderer", "Error rendering page $pageIndex: ${e.message}")
-                e.printStackTrace()
+                    e.printStackTrace()
                 
                 // Clean up bitmap if created
                 bitmap?.let {
@@ -251,12 +251,12 @@ fun PdfRendererView(uri: Uri) {
                     }
                 }
                 null
-            } finally {
-                try {
-                    page?.close()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
+                } finally {
+                    try {
+                        page?.close()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
             }
         } catch (e: Exception) {
             android.util.Log.e("PdfRenderer", "Unexpected error in renderPageInternal: ${e.message}")
@@ -297,7 +297,7 @@ fun PdfRendererView(uri: Uri) {
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("PdfRenderer", "Error in watchdog: ${e.message}")
-                    e.printStackTrace()
+            e.printStackTrace()
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     android.util.Log.d("PdfRenderer", "Watchdog cancelled")
                     throw e
@@ -321,7 +321,7 @@ fun PdfRendererView(uri: Uri) {
                         if (pdfRenderer == null) {
                             android.util.Log.w("PdfRenderer", "PDF renderer is null, skipping page ${request.pageIndex}")
                             renderingPages.remove(request.pageIndex)
-                            withContext(Dispatchers.Main) {
+            withContext(Dispatchers.Main) {
                                 queuedPages.value = queuedPages.value - request.pageIndex
                             }
                             continue
@@ -345,8 +345,8 @@ fun PdfRendererView(uri: Uri) {
                             try {
                                 withContext(Dispatchers.Main) {
                                     queuedPages.value = queuedPages.value - request.pageIndex
-                                }
-                            } catch (e: Exception) {
+                    }
+                } catch (e: Exception) {
                                 android.util.Log.e("PdfRenderer", "Error updating queuedPages: ${e.message}")
                             }
                             continue
@@ -380,7 +380,7 @@ fun PdfRendererView(uri: Uri) {
                             android.util.Log.d("PdfRenderer", "Page ${request.pageIndex} already cached at correct scale, skipping")
                             // Remove from queued if it was there
                             try {
-                                withContext(Dispatchers.Main) {
+            withContext(Dispatchers.Main) {
                                     queuedPages.value = queuedPages.value - request.pageIndex
                                 }
                             } catch (e: Exception) {
@@ -398,7 +398,7 @@ fun PdfRendererView(uri: Uri) {
                             android.util.Log.d("PdfRenderer", "Page ${request.pageIndex} already in progress (started ${currentTime - renderStartTime}ms ago), skipping")
                             // Remove from queued if it was there
                             try {
-                                withContext(Dispatchers.Main) {
+            withContext(Dispatchers.Main) {
                                     queuedPages.value = queuedPages.value - request.pageIndex
                                 }
                             } catch (e: Exception) {
@@ -427,37 +427,60 @@ fun PdfRendererView(uri: Uri) {
                                 .filter { batchNum -> batchNum >= 0 && batchNum * batchSize < pageCount }
                             
                             try {
+                                // CRITICAL: Collect bitmaps to recycle BEFORE updating cache
+                                val bitmapsToRecycle = mutableListOf<Bitmap>()
+                                
                                 withContext(Dispatchers.Main) {
                                     val pagesToKeep = pageCache.filter { (pageIndex, _) ->
                                         val pageBatch = pageIndex / batchSize
                                         batchesToKeep.contains(pageBatch)
                                     }
                                     
-                                    // Recycle removed pages
+                                    // Collect bitmaps that will be removed (but don't recycle yet)
                                     pageCache.forEach { (pageIndex, pair) ->
                                         if (!pagesToKeep.containsKey(pageIndex)) {
-                                            try {
-                                                activeBitmaps.remove(pair.first)
-                                                if (!pair.first.isRecycled) {
-                                                    pair.first.recycle()
-                                                }
-                                            } catch (e: Exception) {
-                                                e.printStackTrace()
-                                            }
+                                            bitmapsToRecycle.add(pair.first)
                                         }
                                     }
                                     
+                                    // CRITICAL: Update cache FIRST
                                     pageCache = pagesToKeep
+                                    android.util.Log.d("PdfRenderer", "[CRASH_LOG] Cache cleaned: kept ${pagesToKeep.size}, will recycle ${bitmapsToRecycle.size}")
+                                }
+                                    
+                                // CRITICAL: Wait to ensure UI has stopped using removed bitmaps
+                                delay(100)
+                                
+                                // CRITICAL: Now safely recycle removed bitmaps AFTER cache update
+                                bitmapsToRecycle.forEach { bitmap ->
+                                    try {
+                                        // Double-check bitmap is not still in cache
+                                        val stillInCache = withContext(Dispatchers.Main) {
+                                            pageCache.values.any { it.first == bitmap }
+                                        }
+                                        
+                                        if (stillInCache) {
+                                            android.util.Log.w("PdfRenderer", "[CRASH_LOG] Bitmap still in cache, skipping recycle")
+                                            return@forEach
+                                        }
+                                        
+                                        activeBitmaps.remove(bitmap)
+                                        if (!bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0) {
+                                            bitmap.recycle()
+                                        }
+        } catch (e: Exception) {
+                                        android.util.Log.e("PdfRenderer", "[] Error recycling bitmap during cleanup: ${e.message}", e)
+                                    }
                                 }
                             } catch (e: Exception) {
-                                android.util.Log.e("PdfRenderer", "Error cleaning cache: ${e.message}")
+                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error cleaning cache: ${e.message}", e)
                             }
                             System.gc()
                         }
                         
                         // Remove from queued and mark as rendering with timestamp
                         try {
-                            withContext(Dispatchers.Main) {
+            withContext(Dispatchers.Main) {
                                 queuedPages.value = queuedPages.value - request.pageIndex
                             }
                         } catch (e: Exception) {
@@ -490,27 +513,18 @@ fun PdfRendererView(uri: Uri) {
                             System.gc()
                             delay(100)
                             bitmap = null // Return null, page will be retried later
-                        } catch (e: Exception) {
+            } catch (e: Exception) {
                             android.util.Log.e("PdfRenderer", "Unexpected error rendering page ${request.pageIndex}: ${e.message}")
-                            e.printStackTrace()
+                e.printStackTrace()
                             bitmap = null
                         }
                         
                         if (bitmap != null) {
-                            // Recycle old bitmap safely
+                            // CRITICAL: Store reference to old bitmap BEFORE updating cache
                             val oldCachedBitmap = cached?.first
-                            if (oldCachedBitmap != null) {
-                                try {
-                                    activeBitmaps.remove(oldCachedBitmap)
-                                    if (!oldCachedBitmap.isRecycled) {
-                                        oldCachedBitmap.recycle()
-                                    }
-                                } catch (e: Exception) {
-                                    android.util.Log.e("PdfRenderer", "Error recycling bitmap: ${e.message}")
-                                }
-                            }
                             
-                            // Update cache on main thread
+                            // CRITICAL: Update cache FIRST on main thread
+                            // This ensures UI switches to new bitmap before old one is recycled
                             try {
                                 withContext(Dispatchers.Main) {
                                     pageCache = pageCache.toMutableMap().apply {
@@ -518,11 +532,42 @@ fun PdfRendererView(uri: Uri) {
                                     }
                                 }
                                 renderSuccess = true
-                                android.util.Log.d("PdfRenderer", "Worker completed page ${request.pageIndex}")
-                            } catch (e: Exception) {
-                                android.util.Log.e("PdfRenderer", "Error updating cache: ${e.message}")
+                                android.util.Log.d("PdfRenderer", "[CRASH_LOG] Worker completed page ${request.pageIndex}, cache updated")
+            } catch (e: Exception) {
+                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error updating cache: ${e.message}", e)
                                 // Still mark as success since bitmap was created
                                 renderSuccess = true
+                            }
+                            
+                            // CRITICAL: Wait a bit to ensure UI has switched to new bitmap
+                            delay(50)
+                            
+                            // CRITICAL: Now safely recycle old bitmap AFTER cache update
+                            if (oldCachedBitmap != null) {
+                                try {
+                                    // Double-check old bitmap is not still in cache
+                                    val stillInCache = withContext(Dispatchers.Main) {
+                                        pageCache[request.pageIndex]?.first == oldCachedBitmap
+                                    }
+                                    
+                                    if (stillInCache) {
+                                        android.util.Log.w("PdfRenderer", "[CRASH_LOG] Old bitmap still in cache for page ${request.pageIndex}, skipping recycle")
+                                    } else {
+                                        // Remove from active bitmaps
+                                        activeBitmaps.remove(oldCachedBitmap)
+                                        
+                                        // Final validation before recycling
+                                        if (!oldCachedBitmap.isRecycled && oldCachedBitmap.width > 0 && oldCachedBitmap.height > 0) {
+                                            oldCachedBitmap.recycle()
+                                            android.util.Log.d("PdfRenderer", "[CRASH_LOG] Recycled old bitmap for page ${request.pageIndex}")
+                                        } else {
+                                            android.util.Log.d("PdfRenderer", "[CRASH_LOG] Old bitmap already recycled or invalid for page ${request.pageIndex}")
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error recycling old bitmap: ${e.message}", e)
+                                    android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                                }
                             }
                         }
                         
@@ -533,8 +578,8 @@ fun PdfRendererView(uri: Uri) {
                             try {
                                 withContext(Dispatchers.Main) {
                                     queuedPages.value = queuedPages.value - request.pageIndex
-                                }
-                            } catch (e: Exception) {
+                }
+            } catch (e: Exception) {
                                 android.util.Log.e("PdfRenderer", "Error updating queuedPages: ${e.message}")
                             }
                         }
@@ -551,7 +596,7 @@ fun PdfRendererView(uri: Uri) {
                         throw e // Re-throw cancellation
                     } catch (e: Exception) {
                         android.util.Log.e("PdfRenderer", "Worker error processing request for page ${request.pageIndex}: ${e.message}")
-                        e.printStackTrace()
+                e.printStackTrace()
                         // Ensure cleanup even if outer try fails
                         if (pageIndex != null) {
                             renderingPages.remove(pageIndex)
@@ -692,30 +737,47 @@ fun PdfRendererView(uri: Uri) {
                     }
                 }
                 
-                // Update cache on main thread
+                // CRITICAL: Update cache on main thread FIRST, then wait before recycling
+                // This ensures UI stops using bitmaps before they're recycled
                 withContext(Dispatchers.Main) {
                     pageCache = pagesToKeep
                     loadedBatches = loadedBatches.filter { batchesToKeep.contains(it) }.toSet()
+                    android.util.Log.d("PdfRenderer", "[CRASH_LOG] Cache updated: removed ${pagesToRemove.size} bitmaps, kept ${pagesToKeep.size}")
                 }
                 
-                // Small delay to ensure pages are not being displayed
-                delay(100)
+                // CRITICAL: Longer delay to ensure UI has stopped using removed bitmaps
+                // This prevents race condition where bitmap is recycled while still being drawn
+                delay(300)
                 
-                // Safely recycle removed bitmaps
+                // Safely recycle removed bitmaps - double check they're not in cache
                 pagesToRemove.forEach { bitmap ->
                     try {
-                        // Don't recycle if still in active use
-                        if (activeBitmaps.contains(bitmap)) {
-                            android.util.Log.d("PdfRenderer", "Skipping recycle of active bitmap")
+                        // CRITICAL: Check if bitmap is still in cache (shouldn't be, but double-check)
+                        val stillInCache = withContext(Dispatchers.Main) {
+                            pageCache.values.any { it.first == bitmap }
+                        }
+                        
+                        if (stillInCache) {
+                            android.util.Log.w("PdfRenderer", "[CRASH_LOG] Bitmap still in cache, skipping recycle")
                             return@forEach
                         }
                         
-                        if (!bitmap.isRecycled) {
+                        // Don't recycle if still in active use
+                        if (activeBitmaps.contains(bitmap)) {
+                            android.util.Log.d("PdfRenderer", "[CRASH_LOG] Skipping recycle of active bitmap")
+                            return@forEach
+                        }
+                        
+                        // Final check before recycling
+                        if (!bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0) {
                             bitmap.recycle()
+                            android.util.Log.d("PdfRenderer", "[CRASH_LOG] Recycled bitmap: ${bitmap.width}x${bitmap.height}")
+                        } else {
+                            android.util.Log.d("PdfRenderer", "[CRASH_LOG] Bitmap already recycled or invalid, skipping")
                         }
                     } catch (e: Exception) {
-                        android.util.Log.e("PdfRenderer", "Error recycling bitmap: ${e.message}")
-                        e.printStackTrace()
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error recycling bitmap: ${e.message}", e)
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
                     }
                 }
                 
@@ -810,7 +872,7 @@ fun PdfRendererView(uri: Uri) {
             pageCount = pdfRenderer!!.pageCount
             
             loadingStatus = "Preparing PDF..."
-            lastRenderedScale = scale
+                    lastRenderedScale = scale
             
             // Hybrid approach: Pre-load first few batches, then load rest on-demand
             // This prevents OOM for large PDFs while still providing smooth initial experience
@@ -877,7 +939,7 @@ fun PdfRendererView(uri: Uri) {
                 val totalPages = pageCount
                 if (pagesLoaded < totalPages) {
                     loadingStatus = "Loaded $pagesLoaded of $totalPages pages. Remaining pages will load as you scroll."
-                } else {
+            } else {
                     loadingStatus = "Ready!"
                 }
                 
@@ -959,127 +1021,306 @@ fun PdfRendererView(uri: Uri) {
     // Use scale as key so previous effect is cancelled when scale changes rapidly
     LaunchedEffect(scale) {
         if (!isInitialLoading && pageCount > 0) {
+            var crashContext = "ZoomHandlerStart"
             try {
+                android.util.Log.d("PdfRenderer", "[CRASH_LOG] Zoom handler triggered: scale=$scale, isInitialLoading=$isInitialLoading, pageCount=$pageCount")
+                
+                crashContext = "ScaleValidation"
                 // Validate scale values
                 val currentScale = scale
                 val currentLastRendered = lastRenderedScale
                 
                 if (currentScale.isNaN() || currentScale.isInfinite() || currentScale <= 0f) {
-                    android.util.Log.w("PdfRenderer", "Invalid scale value: $currentScale, skipping zoom handler")
+                    android.util.Log.w("PdfRenderer", "[CRASH_LOG] Invalid scale value: $currentScale, skipping zoom handler")
                     return@LaunchedEffect
                 }
                 
                 if (currentLastRendered.isNaN() || currentLastRendered.isInfinite() || currentLastRendered <= 0f) {
-                    android.util.Log.w("PdfRenderer", "Invalid lastRenderedScale: $currentLastRendered, resetting")
-                    lastRenderedScale = currentScale
+                    android.util.Log.w("PdfRenderer", "[CRASH_LOG] Invalid lastRenderedScale: $currentLastRendered, resetting")
+                    try {
+                        lastRenderedScale = currentScale
+            } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error resetting lastRenderedScale: ${e.message}", e)
+                    }
                     return@LaunchedEffect
                 }
                 
-                val scaleDifference = kotlin.math.abs(currentScale - currentLastRendered)
+                crashContext = "ScaleDifferenceCalculation"
+                val scaleDifference = try {
+                    kotlin.math.abs(currentScale - currentLastRendered)
+                } catch (e: Exception) {
+                    android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error calculating scale difference: ${e.message}", e)
+                    return@LaunchedEffect
+                }
+                
                 if (scaleDifference >= 0.08f) {
-                    android.util.Log.d("PdfRenderer", "Scale changed from $currentLastRendered to $currentScale")
+                    android.util.Log.d("PdfRenderer", "[CRASH_LOG] Scale changed from $currentLastRendered to $currentScale (diff=$scaleDifference)")
                     
+                    crashContext = "WaitTimeCalculation"
                     // If pinch zoom is active, wait longer for gesture to complete
-                    val waitTime = if (isPinchZoomActive) {
-                        android.util.Log.d("PdfRenderer", "Pinch zoom active, waiting longer...")
-                        1200L  // Wait 1.2 seconds for pinch gesture to complete
-                    } else {
-                        600L   // Wait 600ms for slider gesture
+                    val waitTime = try {
+                        if (isPinchZoomActive) {
+                            android.util.Log.d("PdfRenderer", "[CRASH_LOG] Pinch zoom active, waiting longer...")
+                            1200L  // Wait 1.2 seconds for pinch gesture to complete
+                        } else {
+                            600L   // Wait 600ms for slider gesture
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error calculating wait time: ${e.message}", e)
+                        1200L  // Default to longer wait
                     }
                     
+                    crashContext = "ZoomInProgressFlag"
                     // Mark that zoom is in progress immediately
-                    isZoomInProgress = true
+                    try {
+                        isZoomInProgress = true
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Set isZoomInProgress=true")
+            } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error setting isZoomInProgress: ${e.message}", e)
+                        // Continue anyway
+                    }
                     
+                    crashContext = "ClearRenderQueue"
                     try {
                         // Clear render queue and stuck rendering states
                         clearRenderQueue()
-                        
-                        // Clear all renderingPages to prevent stuck states (ConcurrentHashMap is thread-safe)
-                        renderingPages.clear()
-                        
-                        withContext(Dispatchers.Main) {
-                            queuedPages.value = emptySet()
-                        }
-                        
-                        android.util.Log.d("PdfRenderer", "Cleared render queue and rendering states due to zoom change")
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Render queue cleared")
                     } catch (e: Exception) {
-                        android.util.Log.e("PdfRenderer", "Error clearing render queue during zoom: ${e.message}")
-                        e.printStackTrace()
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error clearing render queue: ${e.message}", e)
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
                         // Continue anyway - don't crash
                     } catch (e: kotlinx.coroutines.CancellationException) {
-                        // Expected during rapid zoom changes
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Render queue clear cancelled (expected)")
                         throw e
                     }
                     
+                    crashContext = "ClearRenderingPages"
+                    try {
+                        // Clear all renderingPages to prevent stuck states (ConcurrentHashMap is thread-safe)
+                        renderingPages.clear()
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Rendering pages cleared: ${renderingPages.size} pages")
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error clearing renderingPages: ${e.message}", e)
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                        // Continue anyway - don't crash
+                    }
+                    
+                    crashContext = "ClearQueuedPages"
+                    try {
+                        withContext(Dispatchers.Main) {
+                            queuedPages.value = emptySet()
+                        }
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Queued pages cleared")
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error clearing queuedPages: ${e.message}", e)
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                        // Continue anyway - don't crash
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Queued pages clear cancelled (expected)")
+                        throw e
+                    }
+                    
+                    android.util.Log.d("PdfRenderer", "[CRASH_LOG] Cleared render queue and rendering states due to zoom change")
+                    
+                    crashContext = "WaitDelay"
                     // Wait for user to finish gesture (longer for pinch zoom)
-                    delay(waitTime)
-                    
+                    try {
+                        delay(waitTime)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Wait delay cancelled (expected)")
+                        throw e
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error during wait delay: ${e.message}", e)
+                        isZoomInProgress = false
+                    return@LaunchedEffect
+                }
+                
+                    crashContext = "ScaleRecheck"
                     // Check if scale changed again during the delay (cancellation check)
-                    val updatedScale = scale
-                    val updatedLastRendered = lastRenderedScale
+                    val updatedScale = try {
+                        scale
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error reading scale after wait: ${e.message}", e)
+                        isZoomInProgress = false
+                        return@LaunchedEffect
+                    }
                     
+                    val updatedLastRendered = try {
+                        lastRenderedScale
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error reading lastRenderedScale after wait: ${e.message}", e)
+                        isZoomInProgress = false
+                        return@LaunchedEffect
+                    }
+                    
+                    crashContext = "ScaleValidationAfterWait"
                     // Validate updated values
                     if (updatedScale.isNaN() || updatedScale.isInfinite() || updatedScale <= 0f ||
                         updatedLastRendered.isNaN() || updatedLastRendered.isInfinite() || updatedLastRendered <= 0f) {
-                        android.util.Log.w("PdfRenderer", "Invalid scale values after wait, resetting")
-                        isZoomInProgress = false
+                        android.util.Log.w("PdfRenderer", "[CRASH_LOG] Invalid scale values after wait: updatedScale=$updatedScale, updatedLastRendered=$updatedLastRendered")
+                        try {
+                            isZoomInProgress = false
+                        } catch (e: Exception) {
+                            android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error resetting isZoomInProgress: ${e.message}", e)
+                        }
                         return@LaunchedEffect
                     }
                     
+                    crashContext = "PinchZoomStillActiveCheck"
                     // Check if pinch zoom is still active - if so, wait more
                     if (isPinchZoomActive) {
-                        android.util.Log.d("PdfRenderer", "Pinch zoom still active, waiting more...")
-                        delay(500)
-                        // Re-check scale after additional wait
-                        val finalScale = scale
-                        if (finalScale.isNaN() || finalScale.isInfinite() || finalScale <= 0f) {
-                            android.util.Log.w("PdfRenderer", "Invalid final scale, resetting")
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Pinch zoom still active, waiting more...")
+                        try {
+                            delay(500)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            android.util.Log.d("PdfRenderer", "[CRASH_LOG] Additional wait cancelled (expected)")
+                            throw e
+                        } catch (e: Exception) {
+                            android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error during additional wait: ${e.message}", e)
                             isZoomInProgress = false
                             return@LaunchedEffect
                         }
-                        if (kotlin.math.abs(finalScale - updatedScale) > 0.05f) {
+                        
+                        crashContext = "FinalScaleCheck"
+                        // Re-check scale after additional wait
+                        val finalScale = try {
+                            scale
+                        } catch (e: Exception) {
+                            android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error reading final scale: ${e.message}", e)
+                            isZoomInProgress = false
+                            return@LaunchedEffect
+                        }
+                        
+                        if (finalScale.isNaN() || finalScale.isInfinite() || finalScale <= 0f) {
+                            android.util.Log.w("PdfRenderer", "[CRASH_LOG] Invalid final scale: $finalScale")
+                            try {
+                                isZoomInProgress = false
+                            } catch (e: Exception) {
+                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error resetting isZoomInProgress: ${e.message}", e)
+                            }
+                            return@LaunchedEffect
+                        }
+                        
+                        val scaleChange = try {
+                            kotlin.math.abs(finalScale - updatedScale)
+                    } catch (e: Exception) {
+                            android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error calculating scale change: ${e.message}", e)
+                            0f
+                        }
+                        
+                        if (scaleChange > 0.05f) {
                             // Scale changed significantly, restart
-                            android.util.Log.d("PdfRenderer", "Scale changed during wait, restarting zoom handler")
+                            android.util.Log.d("PdfRenderer", "[CRASH_LOG] Scale changed during wait ($updatedScale -> $finalScale), restarting zoom handler")
                             return@LaunchedEffect
                         }
                     }
                     
+                    crashContext = "ScaleSettledCheck"
                     // Check if scale changed again during the delay
-                    if (kotlin.math.abs(updatedScale - updatedLastRendered) < 0.08f) {
+                    val finalScaleDiff = try {
+                        kotlin.math.abs(updatedScale - updatedLastRendered)
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error calculating final scale diff: ${e.message}", e)
+                        0f
+                    }
+                    
+                    if (finalScaleDiff < 0.08f) {
                         // Scale settled back, no need to re-render
-                        isZoomInProgress = false
-                        android.util.Log.d("PdfRenderer", "Scale settled back within threshold, skipping re-render")
+                        try {
+                            isZoomInProgress = false
+                        } catch (e: Exception) {
+                            android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error resetting isZoomInProgress: ${e.message}", e)
+                        }
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Scale settled back within threshold ($finalScaleDiff < 0.08f), skipping re-render")
                         return@LaunchedEffect
                     }
                     
-                    android.util.Log.d("PdfRenderer", "Scale settled at $updatedScale, triggering re-render")
+                    android.util.Log.d("PdfRenderer", "[CRASH_LOG] Scale settled at $updatedScale, triggering re-render")
                     
+                    crashContext = "UpdateLastRenderedScale"
                     // Update the target scale
-                    lastRenderedScale = updatedScale
+                    try {
+                        lastRenderedScale = updatedScale
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Updated lastRenderedScale to $updatedScale")
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error updating lastRenderedScale: ${e.message}", e)
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                        isZoomInProgress = false
+                        return@LaunchedEffect
+                    }
                     
+                    crashContext = "ClearLoadedBatches"
                     // Clear loaded batches so pages reload at new scale
-                    loadedBatches = emptySet()
+                    try {
+                        loadedBatches = emptySet()
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Cleared loaded batches")
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error clearing loaded batches: ${e.message}", e)
+                        // Continue anyway
+                    }
                     
                     // Don't queue ALL pages - let scroll handler load them on-demand
                     // This prevents memory issues and conflicts
-                    android.util.Log.d("PdfRenderer", "Zoom scale updated to $updatedScale, pages will reload on-demand")
+                    android.util.Log.d("PdfRenderer", "[CRASH_LOG] Zoom scale updated to $updatedScale, pages will reload on-demand")
                     
+                    crashContext = "FinalDelay"
                     // Small delay to let UI update and ensure cleanup is complete
-                    delay(300)
+                    try {
+                        delay(300)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Final delay cancelled (expected)")
+                        throw e
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error during final delay: ${e.message}", e)
+                        // Continue anyway
+                    }
                     
-                    isZoomInProgress = false
-                    
-                    android.util.Log.d("PdfRenderer", "Zoom complete, scroll loading enabled")
+                    crashContext = "ResetZoomInProgress"
+                    try {
+                        isZoomInProgress = false
+                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Zoom complete, scroll loading enabled")
+                        // Note: Scroll handler will automatically reload visible pages when lastRenderedScale changes
+                        // The reduced delay (100ms) ensures pages reload quickly after zoom
+                    } catch (e: Exception) {
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error resetting isZoomInProgress: ${e.message}", e)
+                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                    }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // Expected when scale changes rapidly - previous effect cancelled
-                android.util.Log.d("PdfRenderer", "Zoom handler cancelled due to rapid scale change")
+                android.util.Log.d("PdfRenderer", "[CRASH_LOG] Zoom handler cancelled due to rapid scale change (expected)")
                 throw e
-            } catch (e: Exception) {
-                android.util.Log.e("PdfRenderer", "Error in zoom handler: ${e.message}")
-                e.printStackTrace()
+            } catch (e: OutOfMemoryError) {
+                android.util.Log.e("PdfRenderer", "[CRASH_LOG] OOM in zoom handler at $crashContext: ${e.message}")
+                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Memory stats: max=${Runtime.getRuntime().maxMemory()}, total=${Runtime.getRuntime().totalMemory()}, free=${Runtime.getRuntime().freeMemory()}")
+                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                System.gc()
                 // Reset zoom state on error
-                isZoomInProgress = false
+                try {
+                    isZoomInProgress = false
+                } catch (ex: Exception) {
+                    android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error resetting isZoomInProgress after OOM: ${ex.message}", ex)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error in zoom handler at $crashContext: ${e.message}", e)
+                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error type: ${e.javaClass.name}")
+                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                // Reset zoom state on error
+                try {
+                    isZoomInProgress = false
+                } catch (ex: Exception) {
+                    android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error resetting isZoomInProgress: ${ex.message}", ex)
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Fatal error in zoom handler at $crashContext: ${e.message}", e)
+                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error type: ${e.javaClass.name}")
+                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                // Reset zoom state on error
+                try {
+                    isZoomInProgress = false
+                } catch (ex: Exception) {
+                    android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error resetting isZoomInProgress: ${ex.message}", ex)
+                }
             }
         }
     }
@@ -1240,8 +1481,15 @@ fun PdfRendererView(uri: Uri) {
                 
                 // Load pages on-demand as user scrolls (for pages beyond initial pre-load)
                 LaunchedEffect(lazyListState.firstVisibleItemIndex, lastRenderedScale) {
-                    // Wait to avoid conflicts with zoom and let scroll settle
-                    delay(300)
+                    // CRITICAL: If lastRenderedScale just changed (zoom completed), reduce delay
+                    // This prevents white screen after rapid zoom
+                    val delayTime = if (isZoomInProgress) {
+                        500L  // Wait longer if zoom still in progress
+                    } else {
+                        100L  // Shorter delay if zoom just completed
+                    }
+                    
+                    delay(delayTime)
                     
                     // Skip if zoom is in progress
                     if (isZoomInProgress) {
@@ -1249,9 +1497,9 @@ fun PdfRendererView(uri: Uri) {
                         return@LaunchedEffect
                     }
                     
-                    // Skip if pinch zoom is actively happening (within last 800ms)
+                    // Skip if pinch zoom is actively happening (within last 500ms - reduced from 800ms)
                     val timeSinceLastPinch = System.currentTimeMillis() - lastPinchZoomTime
-                    if (isPinchZoomActive || timeSinceLastPinch < 800) {
+                    if (isPinchZoomActive || timeSinceLastPinch < 500) {
                         android.util.Log.d("PdfRenderer", "Skipping scroll load - pinch zoom active or recent (${timeSinceLastPinch}ms ago)")
                         return@LaunchedEffect
                     }
@@ -1395,11 +1643,15 @@ fun PdfRendererView(uri: Uri) {
                         .fillMaxSize()
                         .pointerInput(Unit) {
                             try {
-                                detectTransformGestures { _, _, zoom, _ ->
+                            detectTransformGestures { _, _, zoom, _ ->
+                                    var crashContext = "PinchZoomGesture"
                                     try {
+                                        // CRASH LOG: Start of gesture handling
+                                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Pinch zoom gesture started: zoom=$zoom")
+                                        
                                         // Validate zoom value
                                         if (zoom.isNaN() || zoom.isInfinite() || zoom <= 0f) {
-                                            android.util.Log.w("PdfRenderer", "Invalid zoom value: $zoom")
+                                            android.util.Log.w("PdfRenderer", "[CRASH_LOG] Invalid zoom value: $zoom")
                                             return@detectTransformGestures
                                         }
                                         
@@ -1408,72 +1660,126 @@ fun PdfRendererView(uri: Uri) {
                                         
                                         // Validate time
                                         if (currentTime <= 0) {
+                                            android.util.Log.w("PdfRenderer", "[CRASH_LOG] Invalid time: $currentTime")
                                             return@detectTransformGestures
                                         }
                                         
+                                        crashContext = "StateUpdate"
                                         // Update state (Compose state is thread-safe for main thread access)
-                                        isPinchZoomActive = true
-                                        lastPinchZoomTime = currentTime
+                                        try {
+                                            isPinchZoomActive = true
+                                            lastPinchZoomTime = currentTime
+                                            android.util.Log.d("PdfRenderer", "[CRASH_LOG] State updated: isPinchZoomActive=true, lastPinchZoomTime=$currentTime")
+                                        } catch (e: Exception) {
+                                            android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error updating state: ${e.message}", e)
+                                            android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                                            return@detectTransformGestures
+                                        }
                                         
                                         // Throttle scale updates - only update every 50ms during pinch
                                         val timeSinceLastUpdate = currentTime - lastScaleUpdateTime
                                         if (timeSinceLastUpdate >= 50) {
+                                            crashContext = "ScaleCalculation"
                                             try {
                                                 // Round to nearest 5% to avoid constant re-renders
                                                 val currentScale = scale
                                                 
+                                                crashContext = "ScaleValidation"
                                                 // Validate current scale
                                                 if (currentScale.isNaN() || currentScale.isInfinite() || currentScale <= 0f) {
-                                                    android.util.Log.w("PdfRenderer", "Invalid current scale: $currentScale, resetting to 0.3f")
-                                                    scale = 0.3f
-                                                    lastScaleUpdateTime = currentTime
+                                                    android.util.Log.w("PdfRenderer", "[CRASH_LOG] Invalid current scale: $currentScale, resetting to 0.3f")
+                                                    try {
+                                                        scale = 0.3f
+                                                        lastScaleUpdateTime = currentTime
+                                                    } catch (e: Exception) {
+                                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error resetting scale: ${e.message}", e)
+                                                    }
                                                     return@detectTransformGestures
                                                 }
                                                 
-                                                val newScale = (currentScale * zoom).coerceIn(0.3f, 0.6f)
+                                                crashContext = "NewScaleCalculation"
+                                                val newScale = try {
+                                                    (currentScale * zoom).coerceIn(0.3f, 0.6f)
+                                                } catch (e: Exception) {
+                                                    android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error calculating newScale: ${e.message}", e)
+                                                    return@detectTransformGestures
+                                                }
                                                 
+                                                crashContext = "NewScaleValidation"
                                                 // Validate new scale
                                                 if (newScale.isNaN() || newScale.isInfinite()) {
-                                                    android.util.Log.w("PdfRenderer", "Invalid new scale: $newScale")
+                                                    android.util.Log.w("PdfRenderer", "[CRASH_LOG] Invalid new scale: $newScale")
                                                     return@detectTransformGestures
                                                 }
                                                 
-                                                val rounded = (kotlin.math.round(newScale * 20f) / 20f)
+                                                crashContext = "ScaleRounding"
+                                                val rounded = try {
+                                                    (kotlin.math.round(newScale * 20f) / 20f)
+                                                } catch (e: Exception) {
+                                                    android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error rounding scale: ${e.message}", e)
+                                                    return@detectTransformGestures
+                                                }
                                                 
+                                                crashContext = "RoundedScaleValidation"
                                                 // Validate rounded scale
                                                 if (rounded.isNaN() || rounded.isInfinite()) {
-                                                    android.util.Log.w("PdfRenderer", "Invalid rounded scale: $rounded")
+                                                    android.util.Log.w("PdfRenderer", "[CRASH_LOG] Invalid rounded scale: $rounded")
                                                     return@detectTransformGestures
                                                 }
                                                 
+                                                crashContext = "ScaleUpdate"
                                                 // Only update if change is significant (prevents micro-updates)
                                                 if (kotlin.math.abs(currentScale - rounded) > 0.01f) {
-                                                    scale = rounded
-                                                    lastScaleUpdateTime = currentTime
+                                                    try {
+                                                        scale = rounded
+                                                        lastScaleUpdateTime = currentTime
+                                                        android.util.Log.d("PdfRenderer", "[CRASH_LOG] Scale updated: $currentScale -> $rounded")
+                                                    } catch (e: Exception) {
+                                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error updating scale: ${e.message}", e)
+                                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                                                        // Don't crash - just skip this update
+                                                    }
                                                 }
+                                            } catch (e: OutOfMemoryError) {
+                                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] OOM in scale calculation at $crashContext: ${e.message}")
+                                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Memory stats: max=${Runtime.getRuntime().maxMemory()}, total=${Runtime.getRuntime().totalMemory()}, free=${Runtime.getRuntime().freeMemory()}")
+                                                System.gc()
+                                                // Don't crash - just skip this update
                                             } catch (e: Exception) {
-                                                android.util.Log.e("PdfRenderer", "Error calculating scale: ${e.message}")
-                                                e.printStackTrace()
+                                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error calculating scale at $crashContext: ${e.message}", e)
+                                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
                                                 // Don't crash - just skip this update
                                             }
                                         }
                                     } catch (e: OutOfMemoryError) {
-                                        android.util.Log.e("PdfRenderer", "OOM in pinch gesture handler")
+                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] OOM in pinch gesture handler at $crashContext: ${e.message}")
+                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Memory stats: max=${Runtime.getRuntime().maxMemory()}, total=${Runtime.getRuntime().totalMemory()}, free=${Runtime.getRuntime().freeMemory()}")
+                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
                                         System.gc()
                                         // Don't crash - just skip this update
                                     } catch (e: Exception) {
-                                        android.util.Log.e("PdfRenderer", "Error in pinch gesture handler: ${e.message}")
-                                        e.printStackTrace()
+                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Unexpected error in pinch gesture handler at $crashContext: ${e.message}", e)
+                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error type: ${e.javaClass.name}")
+                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                                        // Don't crash - just skip this update
+                                    } catch (e: Throwable) {
+                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Fatal error in pinch gesture handler at $crashContext: ${e.message}", e)
+                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error type: ${e.javaClass.name}")
+                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
                                         // Don't crash - just skip this update
                                     }
                                 }
-                            } catch (e: Exception) {
-                                android.util.Log.e("PdfRenderer", "Error setting up gesture detector: ${e.message}")
-                                e.printStackTrace()
-                                // Don't crash - gesture detection will be retried
                             } catch (e: OutOfMemoryError) {
-                                android.util.Log.e("PdfRenderer", "OOM setting up gesture detector")
+                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] OOM setting up gesture detector: ${e.message}")
+                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
                                 System.gc()
+                            } catch (e: Exception) {
+                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error setting up gesture detector: ${e.message}", e)
+                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
+                                // Don't crash - gesture detection will be retried
+                            } catch (e: Throwable) {
+                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Fatal error setting up gesture detector: ${e.message}", e)
+                                android.util.Log.e("PdfRenderer", "[CRASH_LOG] Stack trace: ${e.stackTraceToString()}")
                             }
                         }
                 ) {
@@ -1499,49 +1805,118 @@ fun PdfRendererView(uri: Uri) {
                                 val scaleDifference = kotlin.math.abs(scale - bitmapScale)
                                 val needsRerender = scaleDifference > 0.08f
                                 
-                                // Use visual scaling for moderate differences (< 20%) to keep pages visible
-                                val canUseVisualScaling = scaleDifference < 0.20f && bitmap != null && !bitmap.isRecycled
+                                // CRITICAL: Validate bitmap is not null and not recycled RIGHT BEFORE USE
+                                // This prevents race condition where bitmap is recycled between check and use
+                                // IMPORTANT: Show bitmap even if at wrong scale (with visual scaling) to prevent white screen
+                                val isValidBitmap = try {
+                                    bitmap != null && !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0
+                                } catch (e: Exception) {
+                                    android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error checking bitmap validity for page $index: ${e.message}")
+                                    false
+                                }
                                 
-                                if (bitmap != null && !bitmap.isRecycled) {
+                                // Use visual scaling for moderate differences (< 30% - increased from 20% to prevent white screen)
+                                // This allows showing old bitmaps at new scale until new ones are ready
+                                val canUseVisualScaling = scaleDifference < 0.30f && isValidBitmap
+                                
+                                // CRITICAL: Show bitmap even if at wrong scale to prevent white screen during rapid zoom
+                                // The visual scaling will make it look acceptable until new bitmap is ready
+                                if (isValidBitmap) {
                                     // Page is loaded - show it with visual scaling if needed
-                                    val aspectRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
-                                    val displayWidth = (screenWidthDp - 32.dp) * scale
-                                    val visualScaleFactor = if (canUseVisualScaling) scale / bitmapScale else 1f
+                                    // CRITICAL: Re-check bitmap validity right before using it
+                                    val safeBitmap = try {
+                                        if (bitmap != null && !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0) {
+                                            bitmap
+                                } else {
+                                            android.util.Log.w("PdfRenderer", "[CRASH_LOG] Bitmap became invalid for page $index between checks")
+                                            null
+                                        }
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error checking bitmap for page $index: ${e.message}")
+                                        null
+                                    }
                                     
-                                    Box {
-                                        Image(
-                                            bitmap = bitmap.asImageBitmap(),
-                                            contentDescription = "PDF Page ${index + 1}",
-                                            contentScale = ContentScale.Fit,
+                                    if (safeBitmap == null) {
+                                        // Bitmap was recycled, show placeholder
+                                        Box(
                                             modifier = Modifier
-                                                .width(displayWidth)
-                                                .aspectRatio(aspectRatio)
-                                                .graphicsLayer(
-                                                    scaleX = visualScaleFactor,
-                                                    scaleY = visualScaleFactor
-                                                )
-                                        )
+                                                .width((screenWidthDp - 32.dp) * scale)
+                                                .height((screenWidthDp - 32.dp) * scale * 1.414f), // A4 aspect ratio
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            CircularProgressIndicator()
+                                        }
+                                    } else {
+                                        // CRITICAL: Final validation right before asImageBitmap()
+                                        val finalBitmap = try {
+                                            if (!safeBitmap.isRecycled && safeBitmap.width > 0 && safeBitmap.height > 0) {
+                                                safeBitmap
+                                            } else {
+                                                android.util.Log.w("PdfRenderer", "[CRASH_LOG] Bitmap recycled right before display for page $index")
+                                                null
+                                            }
+                                        } catch (e: Exception) {
+                                            android.util.Log.e("PdfRenderer", "[CRASH_LOG] Error in final bitmap check for page $index: ${e.message}")
+                                            null
+                                        }
                                         
-                                        // Show small indicator if actively re-rendering at new zoom level (not stale)
-                                        val renderStartTime = renderingPages[index]
-                                        val currentTime = System.currentTimeMillis()
-                                        val isActivelyRendering = renderStartTime != null && 
-                                            (currentTime - renderStartTime) < RENDERING_TIMEOUT_MS
-                                        
-                                        if (needsRerender && isActivelyRendering && !isZoomInProgress) {
-                                            Card(
+                                        if (finalBitmap == null) {
+                                            // Show placeholder if bitmap became invalid
+                                            Box(
                                                 modifier = Modifier
-                                                    .align(Alignment.TopEnd)
-                                                    .padding(8.dp),
-                                                elevation = 4.dp,
-                                                backgroundColor = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.9f)
+                                                    .width((screenWidthDp - 32.dp) * scale)
+                                                    .height((screenWidthDp - 32.dp) * scale * 1.414f),
+                                                contentAlignment = Alignment.Center
                                             ) {
-                                                CircularProgressIndicator(
-                                                    modifier = Modifier
-                                                        .size(20.dp)
-                                                        .padding(4.dp),
-                                                    strokeWidth = 2.dp
-                                                )
+                                                CircularProgressIndicator()
+                                            }
+                                        } else {
+                                            val aspectRatio = finalBitmap.width.toFloat() / finalBitmap.height.toFloat()
+                                            val displayWidth = (screenWidthDp - 32.dp) * scale
+                                            // CRITICAL: Always use visual scaling if scale differs to prevent white screen
+                                            // Even if difference is large, show old bitmap scaled until new one is ready
+                                            val visualScaleFactor = if (scaleDifference > 0.08f) {
+                                                scale / bitmapScale  // Scale old bitmap to new size
+                                            } else {
+                                                1f  // No scaling needed if scale matches
+                                            }
+                                            
+                                            Box {
+                                Image(
+                                                    bitmap = finalBitmap.asImageBitmap(),
+                                    contentDescription = "PDF Page ${index + 1}",
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier
+                                        .width(displayWidth)
+                                        .aspectRatio(aspectRatio)
+                                        .graphicsLayer(
+                                            scaleX = visualScaleFactor,
+                                            scaleY = visualScaleFactor
+                                        )
+                                )
+                                                
+                                                // Show small indicator if actively re-rendering at new zoom level (not stale)
+                                                val renderStartTime = renderingPages[index]
+                                                val currentTime = System.currentTimeMillis()
+                                                val isActivelyRendering = renderStartTime != null && 
+                                                    (currentTime - renderStartTime) < RENDERING_TIMEOUT_MS
+                                                
+                                                if (needsRerender && isActivelyRendering && !isZoomInProgress) {
+                                                    Card(
+                                                        modifier = Modifier
+                                                            .align(Alignment.TopEnd)
+                                                            .padding(8.dp),
+                                                        elevation = 4.dp,
+                                                        backgroundColor = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.9f)
+                                                    ) {
+                                                        CircularProgressIndicator(
+                                                            modifier = Modifier
+                                                                .size(20.dp)
+                                                                .padding(4.dp),
+                                                            strokeWidth = 2.dp
+                                                        )
+                                                    }
+                                                }
                                             }
                                         }
                                     }
